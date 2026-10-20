@@ -1,0 +1,25 @@
+[project]
+name = "ai-data-agent"
+version = "0.1.0"
+description = "Add your description here"
+readme = "README.md"
+authors = [
+    { name = "Nadula Pathirana", email = "nadulapathirana2010@gmail.com" }
+]
+requires-python = ">=3.13"
+dependencies = [
+    "duckdb>=1.5.6",
+    "langchain-openai>=1.7.2",
+    "langgraph>=1.2.16",
+    "openpyxl>=3.1.5",
+    "pandas>=3.0.6",
+    "python-dotenv>=1.2.4",
+    "streamlit>=1.66.0",
+]
+
+[project.scripts]
+ai-data-agent = "ai_data_agent:main"
+
+[build-system]
+requires = ["uv_build>=0.12.18,<0.13.0"]
+build-backend = "uv_build"
