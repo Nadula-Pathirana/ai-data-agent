@@ -1,30 +1,49 @@
+import difflib
 import re
 
-FORBIDDEN_WORDS = [
-    "drop", "delete", "insert", "update", "alter", "create",
-    "copy", "attach", "detach", "pragma", "export", "install",
-]
+import duckdb
 
 
 def validate_sql(sql: str) -> tuple[bool, str]:
-    """Return (is_valid, error_message)."""
+    """Return (is_valid, error_message). Uses DuckDB's own parser instead of keyword matching."""
     if not sql or not sql.strip():
         return False, "The model did not produce any SQL."
 
-    cleaned = sql.strip().rstrip(";").strip()
+    try:
+        statements = duckdb.extract_statements(sql)
+    except Exception as exc:  # syntax errors surface here; the repair step can fix them
+        return False, f"The SQL could not be parsed: {exc}"
 
-    if ";" in cleaned:
-        return False, "Only a single SQL statement is allowed."
+    if len(statements) != 1:
+        return False, f"Exactly one SQL statement is allowed, but found {len(statements)}."
 
-    lowered = cleaned.lower()
-    if not (lowered.startswith("select") or lowered.startswith("with")):
-        return False, "Only SELECT queries are allowed."
-
-    for word in FORBIDDEN_WORDS:
-        if re.search(rf"\b{word}\b", lowered):
-            return False, f"The query contains a forbidden keyword: '{word}'."
+    statement_type = statements[0].type
+    if statement_type != duckdb.StatementType.SELECT:
+        return False, f"Only SELECT queries are allowed (this was {statement_type})."
 
     return True, ""
+
+
+# ---------- helpers for friendly "missing column" messages ----------
+
+_MISSING_COLUMN_PATTERNS = [
+    r'Referenced column "([^"]+)" not found',
+    r'does not have a column named "([^"]+)"',
+]
+
+
+def find_missing_column(error_text: str) -> str | None:
+    """Pull the unknown column name out of a DuckDB binder error, if there is one."""
+    for pattern in _MISSING_COLUMN_PATTERNS:
+        match = re.search(pattern, error_text or "")
+        if match:
+            return match.group(1)
+    return None
+
+
+def closest_columns(name: str, columns: list[str], limit: int = 3) -> list[str]:
+    """Columns whose names look most like `name` (empty list if nothing is close)."""
+    return difflib.get_close_matches(name.lower(), columns, n=limit, cutoff=0.5)
 
 
 """

@@ -3,7 +3,10 @@ import re
 import duckdb
 import pandas as pd
 
+import config
+
 TABLE_NAME = "data"
+SUPPORTED_TYPES = (".csv", ".xlsx")
 
 
 def clean_column_names(columns) -> list[str]:
@@ -24,18 +27,47 @@ def clean_column_names(columns) -> list[str]:
     return cleaned
 
 
+def _read_csv(uploaded_file) -> pd.DataFrame:
+    try:
+        return pd.read_csv(uploaded_file)
+    except UnicodeDecodeError:
+        uploaded_file.seek(0)  # rewind, then retry with a more forgiving encoding
+        return pd.read_csv(uploaded_file, encoding="latin-1")
+
+
 def read_file(uploaded_file) -> pd.DataFrame:
-    """Read an uploaded CSV/XLSX (Streamlit UploadedFile) into a DataFrame."""
+    """Read an uploaded CSV/XLSX (Streamlit UploadedFile) into a DataFrame.
+
+    Every problem is raised as a ValueError with a message that is safe to show to the user.
+    """
     filename = uploaded_file.name.lower()
-    if filename.endswith(".csv"):
-        df = pd.read_csv(uploaded_file)
-    elif filename.endswith(".xlsx"):
-        df = pd.read_excel(uploaded_file)  # first sheet only in V1
-    else:
+    if not filename.endswith(SUPPORTED_TYPES):
         raise ValueError("Unsupported file type. Please upload a .csv or .xlsx file.")
 
-    if df.empty:
-        raise ValueError("The file has no rows.")
+    size_mb = uploaded_file.size / (1024 * 1024)
+    if size_mb > config.MAX_FILE_MB:
+        raise ValueError(
+            f"The file is {size_mb:.1f} MB, which is over the {config.MAX_FILE_MB} MB limit."
+        )
+
+    try:
+        if filename.endswith(".csv"):
+            df = _read_csv(uploaded_file)
+        else:
+            df = pd.read_excel(uploaded_file)  # first sheet only until V5
+    except pd.errors.EmptyDataError:
+        raise ValueError("The file is empty.") from None
+    except Exception as exc:
+        kind = "CSV" if filename.endswith(".csv") else "Excel"
+        raise ValueError(
+            f"Could not read this {kind} file. It may be corrupt, password protected "
+            f"or not a valid {kind} file. ({type(exc).__name__})"
+        ) from exc
+
+    # Messy spreadsheets often contain blank rows and columns with a header but no values.
+    # df = df.dropna(how="all").dropna(axis="columns", how="all")
+    # if df.empty:
+    #     raise ValueError("The file has no data rows.")
 
     df.columns = clean_column_names(df.columns)
     return df
@@ -60,34 +92,3 @@ def get_schema(con) -> tuple[pd.DataFrame, str]:
     lines += [f"- {r.column_name} ({r.column_type})" for r in info.itertuples()]
     lines += ["", "Sample rows:", sample.to_string(index=False)]
     return info, "\n".join(lines)
-
-
-"""
-Module: Data Loader (data_loader.py)
-Description:
-This module manages the complete data ingestion, preprocessing, and schema 
-extraction pipeline for the AI Data Analysis Agent[cite: 1]. 
-
-Key functionalities include:
-1. Column Name Sanitation:
-   - Converts raw, messy column headers (e.g., spaces, special characters, 
-     mixed casing) into clean, SQL-friendly identifiers[cite: 1].
-   - Prevents database syntax errors by handling digit-starting names (prefixed 
-     with 'col_') and guarantees uniqueness by appending numeric suffixes 
-     to duplicate column titles[cite: 1].
-
-2. File Reading & Validation:
-   - Reads uploaded CSV or Excel (.xlsx) files from Streamlit file uploaders 
-     into pandas DataFrames while rejecting empty files or unsupported formats[cite: 1].
-
-3. In-Memory Database Ingestion:
-   - Spins up an ephemeral in-memory DuckDB database connection and materializes 
-     the processed DataFrame into a structured SQL table named 'data'[cite: 1].
-
-4. Schema & Context Generation:
-   - Inspects the DuckDB table schema to generate a metadata summary for the 
-     Streamlit UI sidebar and a formatted text block containing column types 
-     and sample rows[cite: 1]. 
-   - Providing these sample rows ensures the LLM can reference exact value 
-     spellings and capitalization, drastically improving SQL generation accuracy[cite: 1].
-"""
