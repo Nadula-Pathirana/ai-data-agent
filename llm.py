@@ -12,20 +12,6 @@
 #         temperature=0,  # SQL generation should be as deterministic as possible
 #     )
 
-# from langchain_google_genai import ChatGoogleGenerativeAI
-# import config
-
-
-# def get_llm() -> ChatGoogleGenerativeAI:
-#   if not config.GOOGLE_API_KEY:
-#     raise RuntimeError("GOOGLE_API_KEY is missing. Add it to your .env file.")
-
-#   return ChatGoogleGenerativeAI(
-#       model=config.MODEL_NAME,  # e.g., "gemini-2.5-flash"
-#       google_api_key=config.GOOGLE_API_KEY,
-#       temperature=0,
-#   )
-
 # pyrefly: ignore[missing-import]
 from langchain_groq import ChatGroq
 import config
