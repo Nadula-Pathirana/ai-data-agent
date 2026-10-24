@@ -5,6 +5,7 @@ from agent_graph import run_agent
 from data_loader import get_schema, load_into_duckdb, read_file
 from db_security import lock_down
 from profiler import build_profile
+from viz.chart_renderer import render_chart
 
 st.set_page_config(page_title="AI Data Analysis Agent", layout="wide")
 st.title("AI Data Analysis Agent")
@@ -122,6 +123,26 @@ def safe_text(text: str) -> str:
     return text.replace("$", r"\$")
 
 
+def render_chart_section(msg: dict) -> None:
+    """Draw the chart (if any) and explain where it came from. Never lets a chart error escape."""
+    spec = msg.get("chart")
+    if spec:
+        try:
+            render_chart(spec, msg["df"])
+        except Exception as exc:  # a broken chart must never break the chat
+            st.caption(f"The chart could not be drawn ({type(exc).__name__}).")
+        else:
+            if msg.get("chart_source") == "llm":
+                st.caption("Chart planned by the AI and checked by the app.")
+            else:
+                reason = f" (the AI's plan was not usable: {msg['chart_issue']})" if msg.get("chart_issue") else ""
+                st.caption(f"Chart chosen by simple rules{reason}.")
+        with st.expander("Chart spec"):
+            st.json(spec)
+    elif msg.get("chart_requested"):
+        st.caption("You asked for a chart, but I could not find a sensible one for this result.")
+
+
 def render_message(msg: dict) -> None:
     with st.chat_message(msg["role"]):
         st.markdown(safe_text(msg["content"]))
@@ -146,6 +167,7 @@ def render_message(msg: dict) -> None:
             st.dataframe(msg["df"], width="stretch")
             if msg.get("truncated"):
                 st.caption(f"Only the first {config.MAX_RESULT_ROWS} rows are shown.")
+            render_chart_section(msg)  # the chart goes under the table
 
 
 for message in st.session_state.messages:
@@ -183,6 +205,10 @@ if question := st.chat_input("Ask a question about your data"):
                     "truncated": result.get("truncated", False),
                     "attempts": result.get("attempts", []),
                     "retries": result.get("retry_count", 0),
+                    "chart": result.get("chart_spec"),
+                    "chart_source": result.get("chart_source", ""),
+                    "chart_issue": result.get("chart_issue", ""),
+                    "chart_requested": result.get("chart_requested", False),
                 }
         except Exception as exc:  # e.g. bad API key, wrong model name, network problem
             reply = {

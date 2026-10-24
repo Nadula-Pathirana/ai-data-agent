@@ -9,6 +9,8 @@ from llm import get_llm
 from prompts import EXPLAIN_PROMPT, REPAIR_PROMPT, SQL_PROMPT
 from sql_validator import closest_columns, find_missing_column, validate_sql
 from state import AgentState
+from viz.chart_planner import plan_chart_with_llm, validate_spec, wants_chart
+from viz.chart_rules import normalize_result, suggest_chart
 
 REFUSAL_MARKER = "CANNOT_ANSWER"
 
@@ -122,6 +124,51 @@ def repair_sql(state: AgentState) -> dict:
     }
 
 
+def plan_visualization(state: AgentState) -> dict:
+    """Ask the LLM for a chart, but never trust the answer.
+
+    chart_source tells the router what happened:
+      "skipped"        nothing worth drawing (0 or 1 rows): no LLM call was made
+      "llm"            the model's spec passed validation (the spec may legitimately be "no chart")
+      "needs_fallback" the model failed, or its spec was unusable: go to rule_based_fallback
+    """
+    question = state["question"]
+    requested = wants_chart(question)
+    data = normalize_result(state["result_df"])
+
+    def outcome(spec, source, issue=""):
+        return {"chart_spec": spec, "chart_source": source,
+                "chart_issue": issue, "chart_requested": requested}
+
+    # A single value or a single row never needs a chart. Skip the LLM call entirely.
+    if len(data) < 2:
+        return outcome(None, "skipped")
+
+    if not config.USE_LLM_CHART_PLANNER:  # rules-only mode
+        return outcome(None, "needs_fallback")
+
+    try:
+        spec = validate_spec(plan_chart_with_llm(question, data, requested), data)
+    except Exception as exc:  # bad JSON, unknown column, network error... all end up here
+        return outcome(None, "needs_fallback", str(exc)[:200])
+
+    if spec["chart"] == "none":
+        if requested:  # the user asked for a chart, so "none" is not acceptable
+            return outcome(None, "needs_fallback", "The model chose no chart although one was requested.")
+        return outcome(None, "llm")
+    return outcome(spec, "llm")
+
+
+def rule_based_fallback(state: AgentState) -> dict:
+    """Pick a chart with plain rules. The result goes through the same validation as the AI's."""
+    data = normalize_result(state["result_df"])
+    try:
+        spec = validate_spec(suggest_chart(data, state["question"]), data)
+    except ValueError:
+        spec = {"chart": "none"}
+    return {"chart_spec": None if spec["chart"] == "none" else spec, "chart_source": "rules"}
+
+
 def explain(state: AgentState) -> dict:
     df = state["result_df"]
 
@@ -196,7 +243,11 @@ def route_after_validation(state: AgentState) -> str:
 
 
 def route_after_execution(state: AgentState) -> str:
-    return _retry_or_fail(state) if state.get("last_error") else "explain"
+    return _retry_or_fail(state) if state.get("last_error") else "plan_visualization"
+
+
+def route_after_planning(state: AgentState) -> str:
+    return "rule_based_fallback" if state.get("chart_source") == "needs_fallback" else "explain"
 
 
 # ---------- graph ----------
@@ -208,6 +259,8 @@ def build_graph():
     graph.add_node("check_sql", check_sql)
     graph.add_node("execute_sql", execute_sql)
     graph.add_node("repair_sql", repair_sql)
+    graph.add_node("plan_visualization", plan_visualization)
+    graph.add_node("rule_based_fallback", rule_based_fallback)
     graph.add_node("explain", explain)
     graph.add_node("fail_gracefully", fail_gracefully)
 
@@ -222,8 +275,14 @@ def build_graph():
     )
     graph.add_conditional_edges(
         "execute_sql", route_after_execution,
-        {"explain": "explain", "repair_sql": "repair_sql", "fail_gracefully": "fail_gracefully"},
+        {"plan_visualization": "plan_visualization", "repair_sql": "repair_sql",
+         "fail_gracefully": "fail_gracefully"},
     )
+    graph.add_conditional_edges(
+        "plan_visualization", route_after_planning,
+        {"rule_based_fallback": "rule_based_fallback", "explain": "explain"},
+    )
+    graph.add_edge("rule_based_fallback", "explain")
     graph.add_conditional_edges(
         "repair_sql", route_after_generation,
         {"check_sql": "check_sql", "fail_gracefully": "fail_gracefully"},
@@ -248,6 +307,10 @@ def run_agent(question: str, schema_text: str, profile_text: str, columns: list[
         "attempts": [],
         "last_error": "",
         "refusal": "",
+        "chart_spec": None,
+        "chart_source": "",
+        "chart_issue": "",
+        "chart_requested": False,
     }
     # Each retry loop costs about 3 graph steps, so raise LangGraph's default limit of 25 if needed.
     return agent.invoke(initial, config={"recursion_limit": 10 + 4 * config.MAX_RETRIES})

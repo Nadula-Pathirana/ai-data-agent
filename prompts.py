@@ -9,7 +9,11 @@ _SQL_RULES = (
     "- Use the dataset profile to spell text values exactly as they appear (for example 'North').\n"
     "- If a column holds dates but its type is VARCHAR, convert it with CAST(column AS DATE) "
     "before using date functions.\n"
+    "- To group by month, use strftime(CAST(date_column AS DATE), '%Y-%m').\n"
     "- Give computed columns clear aliases (for example total_revenue).\n"
+    "- If the user asks for a chart or plot, or for a trend over time, return the data needed to draw it: "
+    "one row per point or category, label or date column first, dates in ascending order. "
+    "Do not collapse it into a single number.\n"
     "- If the question needs a column that does not exist, is unrelated to this data, or is too vague "
     "to answer (for example 'show me the best ones' with no metric), do NOT guess. "
     "Reply with exactly one line: CANNOT_ANSWER: <short reason, naming the closest "
@@ -54,30 +58,28 @@ EXPLAIN_PROMPT = ChatPromptTemplate.from_messages([
      "Notes: {note}"),
 ])
 
-
-
-
-
-"""
-Module: Prompts Configuration (prompts.py)
-Description:
-This module defines the core ChatPromptTemplates used by the AI Data Analysis 
-Agent to interact with LLMs via LangChain[cite: 1]. It structures system personas 
-and human queries to ensure safe, accurate, and structured outputs[cite: 1].
-
-Key components include:
-1. SQL_PROMPT:
-   - Role: Directs the LLM to act as an expert data analyst writing DuckDB SQL[cite: 1].
-   - Inputs: Injects the database schema metadata and the user's natural language question[cite: 1].
-   - Rules: Enforces read-only SELECT statements, restricts column usage to prevent 
-     hallucinations, requires clear aliases for computed columns, and demands 
-     raw SQL output with zero conversational explanation or markdown formatting[cite: 1].
-
-2. EXPLAIN_PROMPT:
-   - Role: Directs the LLM to act as a careful data analyst explaining data query 
-     results in plain, non-technical English[cite: 1].
-   - Inputs: Combines the original user question, the generated SQL query, and the 
-     resulting data table[cite: 1].
-   - Rules: Enforces strict adherence to table values (preventing invented numbers), 
-     handles empty tables gracefully, and restricts answers to concise 2-to-4-sentence explanations[cite: 1].
-"""
+# V3. NOTE: the JSON example uses doubled braces {{ }} because single braces mean
+# "template variable" in a ChatPromptTemplate. They come out as normal braces.
+CHART_PROMPT = ChatPromptTemplate.from_messages([
+    ("system",
+     "You decide whether a query result should be shown as a chart, and which one.\n\n"
+     "Reply with ONLY one JSON object, no markdown and no explanation:\n"
+     '{{"chart": "bar", "x": "region", "y": "total_sales", "title": "Sales by Region"}}\n\n'
+     "Allowed values for \"chart\": bar, line, scatter, histogram, none.\n"
+     "Rules:\n"
+     "- \"x\" and \"y\" must be exact column names from the column list you are given.\n"
+     "- bar: x is a category (or a label), y is a number. One row per category.\n"
+     "- line: x is a date or an ordered number (year, month), y is a number.\n"
+     "- scatter: x and y are both numbers, to show a relationship.\n"
+     "- histogram: x is a number and y is left out. Use it for the spread of one numeric column.\n"
+     "- none: a single value, a single row, a plain list of text, or any result where a chart would not help.\n"
+     "- If the user explicitly asked for a chart, do not answer none unless it is truly impossible. "
+     "If they named a chart type and the columns allow it, use that type.\n"
+     "- The title is short (under 60 characters) and plain English."),
+    ("human",
+     "Question: {question}\n"
+     "Explicit chart request: {requested}\n\n"
+     "Result columns:\n{columns}\n\n"
+     "Number of rows: {row_count}\n\n"
+     "First rows:\n{sample}"),
+])

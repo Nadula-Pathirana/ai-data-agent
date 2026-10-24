@@ -21,3 +21,9 @@ class AgentState(TypedDict, total=False):
     truncated: bool       # True if the result was cut at MAX_RESULT_ROWS
     explanation: str
     error: str            # final, user-friendly failure message (only set on failure)
+
+    # ---- V3: visualization ----
+    chart_spec: dict | None  # validated {"chart","x","y","title"}, or None = no chart
+    chart_source: str        # "llm" | "skipped" | "needs_fallback" | "rules"
+    chart_issue: str         # why the AI's chart plan was rejected ("" = nothing wrong)
+    chart_requested: bool    # True if the user explicitly asked for a chart
