@@ -27,3 +27,7 @@ class AgentState(TypedDict, total=False):
     chart_source: str        # "llm" | "skipped" | "needs_fallback" | "rules"
     chart_issue: str         # why the AI's chart plan was rejected ("" = nothing wrong)
     chart_requested: bool    # True if the user explicitly asked for a chart
+
+    # ---- V4 ----
+    row_limit: int           # how many rows this query was allowed to return (200 normally, more for histogram/scatter)
+    chart_note: str          # message for the user, e.g. "You asked for a line chart, but ..."

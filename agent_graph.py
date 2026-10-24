@@ -10,7 +10,7 @@ from prompts import EXPLAIN_PROMPT, REPAIR_PROMPT, SQL_PROMPT
 from sql_validator import closest_columns, find_missing_column, validate_sql
 from state import AgentState
 from viz.chart_planner import plan_chart_with_llm, validate_spec, wants_chart
-from viz.chart_rules import normalize_result, suggest_chart
+from viz.chart_rules import histogram_bins, normalize_result, requested_chart_type, suggest_chart
 
 REFUSAL_MARKER = "CANNOT_ANSWER"
 
@@ -75,6 +75,15 @@ def run_query(con, sql: str, max_rows: int, timeout: int) -> tuple[pd.DataFrame,
     truncated = len(rows) > max_rows
     return pd.DataFrame(rows[:max_rows], columns=columns), truncated
 
+def row_limit_for(question: str) -> int:
+    """Histograms and scatter plots need many raw rows; everything else keeps the small limit."""
+    kind = requested_chart_type(question)
+    if kind == "histogram":
+        return config.HISTOGRAM_MAX_ROWS
+    if kind == "scatter":
+        return config.SCATTER_MAX_ROWS
+    return config.MAX_RESULT_ROWS
+
 
 # ---------- nodes ----------
 
@@ -95,11 +104,10 @@ def check_sql(state: AgentState) -> dict:
 
 
 def execute_sql(state: AgentState) -> dict:
+    limit = row_limit_for(state["question"])
     try:
-        df, truncated = run_query(
-            state["con"], state["sql"], config.MAX_RESULT_ROWS, config.QUERY_TIMEOUT_SECONDS
-        )
-        return {"result_df": df, "truncated": truncated, "last_error": ""}
+        df, truncated = run_query(state["con"], state["sql"], limit, config.QUERY_TIMEOUT_SECONDS)
+        return {"result_df": df, "truncated": truncated, "row_limit": limit, "last_error": ""}
     except Exception as exc:
         return {"last_error": f"The SQL query failed: {exc}"}
 
@@ -134,6 +142,7 @@ def plan_visualization(state: AgentState) -> dict:
     """
     question = state["question"]
     requested = wants_chart(question)
+    asked_type = requested_chart_type(question)   # NEW: the type the user NAMED, if any
     data = normalize_result(state["result_df"])
 
     def outcome(spec, source, issue=""):
@@ -148,7 +157,9 @@ def plan_visualization(state: AgentState) -> dict:
         return outcome(None, "needs_fallback")
 
     try:
-        spec = validate_spec(plan_chart_with_llm(question, data, requested), data)
+        raw_spec = plan_chart_with_llm(question, data, requested, asked_type)
+        # NEW: asked_type overrides whatever type the model picked
+        spec = validate_spec(raw_spec, data, asked_type)
     except Exception as exc:  # bad JSON, unknown column, network error... all end up here
         return outcome(None, "needs_fallback", str(exc)[:200])
 
@@ -160,13 +171,45 @@ def plan_visualization(state: AgentState) -> dict:
 
 
 def rule_based_fallback(state: AgentState) -> dict:
-    """Pick a chart with plain rules. The result goes through the same validation as the AI's."""
+    """Pick a chart with plain rules. The result goes through the same validation as the AI's.
+
+    NEW: if the user named a chart type and the data cannot be drawn that way, we SAY SO
+    instead of silently drawing a different chart.
+    """
     data = normalize_result(state["result_df"])
+    asked = requested_chart_type(state["question"])
     try:
         spec = validate_spec(suggest_chart(data, state["question"]), data)
     except ValueError:
         spec = {"chart": "none"}
-    return {"chart_spec": None if spec["chart"] == "none" else spec, "chart_source": "rules"}
+
+    note = ""
+    if spec["chart"] == "none":
+        if asked:
+            note = (f"You asked for a {asked} chart, but this result cannot be drawn as one "
+                    f"(the problem: {state.get('chart_issue') or 'the columns do not fit that chart'}).")
+    elif asked and spec["chart"] != asked:
+        note = (f"You asked for a {asked} chart, but this result cannot be drawn as one, "
+                f"so a {spec['chart']} chart is shown instead.")
+
+    return {"chart_spec": None if spec["chart"] == "none" else spec,
+            "chart_source": "rules", "chart_note": note}
+
+
+def _result_for_explanation(state: AgentState) -> str:
+    """What the explaining model gets to read. Never more than ~50 rows."""
+    df = state["result_df"]
+    spec = state.get("chart_spec")
+    if spec and spec["chart"] == "histogram":
+        # The table is thousands of raw values: describe it with statistics and the bins instead.
+        values = normalize_result(df)[spec["x"]].dropna()
+        bins = histogram_bins(values, config.HISTOGRAM_BINS).round(2)
+        return (f"{len(values)} values of '{spec['x']}'.\nSummary statistics:\n"
+                f"{values.describe().round(2).to_string()}\n\nHistogram bins:\n{bins.to_string(index=False)}")
+    if len(df) > 50:  # show the START and the END, not only the first rows
+        return (f"(first 25 and last 25 of {len(df)} rows)\n"
+                f"{df.head(25).to_string(index=False)}\n...\n{df.tail(25).to_string(index=False)}")
+    return df.to_string(index=False)
 
 
 def explain(state: AgentState) -> dict:
@@ -181,16 +224,14 @@ def explain(state: AgentState) -> dict:
 
     notes = []
     if state.get("truncated"):
-        notes.append(f"The result was cut off at {config.MAX_RESULT_ROWS} rows.")
-    if len(df) > 50:
-        notes.append("Only the first 50 rows are shown to you here.")
+        notes.append(f"The result was cut off at {state.get('row_limit', config.MAX_RESULT_ROWS)} rows.")
 
     try:
         chain = EXPLAIN_PROMPT | get_llm()
         response = chain.invoke({
             "question": state["question"],
             "sql": state["sql"],
-            "result": df.head(50).to_string(index=False),
+            "result": _result_for_explanation(state),
             "note": " ".join(notes) or "None",
         })
         return {"explanation": _as_text(response)}
@@ -311,6 +352,7 @@ def run_agent(question: str, schema_text: str, profile_text: str, columns: list[
         "chart_source": "",
         "chart_issue": "",
         "chart_requested": False,
+        "chart_note": "",
     }
     # Each retry loop costs about 3 graph steps, so raise LangGraph's default limit of 25 if needed.
     return agent.invoke(initial, config={"recursion_limit": 10 + 4 * config.MAX_RETRIES})

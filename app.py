@@ -132,6 +132,8 @@ def render_chart_section(msg: dict) -> None:
         except Exception as exc:  # a broken chart must never break the chat
             st.caption(f"The chart could not be drawn ({type(exc).__name__}).")
         else:
+            if msg.get("chart_note"):  # NEW: tell the user when we could not give the chart they named
+                st.warning(msg["chart_note"])
             if msg.get("chart_source") == "llm":
                 st.caption("Chart planned by the AI and checked by the app.")
             else:
@@ -140,8 +142,8 @@ def render_chart_section(msg: dict) -> None:
         with st.expander("Chart spec"):
             st.json(spec)
     elif msg.get("chart_requested"):
-        st.caption("You asked for a chart, but I could not find a sensible one for this result.")
-
+        st.warning(msg.get("chart_note") or
+                   "You asked for a chart, but I could not find a sensible one for this result.")
 
 def render_message(msg: dict) -> None:
     with st.chat_message(msg["role"]):
@@ -164,9 +166,12 @@ def render_message(msg: dict) -> None:
                     st.caption(attempt["error"])
 
         if msg.get("df") is not None:
-            st.dataframe(msg["df"], width="stretch")
+            shown = msg["df"].head(config.MAX_RESULT_ROWS)      # never push 100,000 raw rows into the page
+            st.dataframe(shown, width="stretch")
+            if len(msg["df"]) > len(shown):
+                st.caption(f"Showing the first {len(shown)} of {len(msg['df'])} rows in the table.")
             if msg.get("truncated"):
-                st.caption(f"Only the first {config.MAX_RESULT_ROWS} rows are shown.")
+                st.caption(f"The query result was cut off at {msg.get('row_limit', config.MAX_RESULT_ROWS)} rows.")
             render_chart_section(msg)  # the chart goes under the table
 
 
@@ -209,6 +214,8 @@ if question := st.chat_input("Ask a question about your data"):
                     "chart_source": result.get("chart_source", ""),
                     "chart_issue": result.get("chart_issue", ""),
                     "chart_requested": result.get("chart_requested", False),
+                    "chart_note": result.get("chart_note", ""),
+                    "row_limit": result.get("row_limit", config.MAX_RESULT_ROWS),
                 }
         except Exception as exc:  # e.g. bad API key, wrong model name, network problem
             reply = {
