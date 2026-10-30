@@ -1,0 +1,35 @@
+---
+config:
+  flowchart:
+    curve: linear
+---
+graph TD;
+	__start__([<p>__start__</p>]):::first
+	generate_sql(generate_sql)
+	check_sql(check_sql)
+	execute_sql(execute_sql)
+	repair_sql(repair_sql)
+	plan_visualization(plan_visualization)
+	rule_based_fallback(rule_based_fallback)
+	explain(explain)
+	fail_gracefully(fail_gracefully)
+	__end__([<p>__end__</p>]):::last
+	__start__ --> generate_sql;
+	check_sql -.-> execute_sql;
+	check_sql -.-> fail_gracefully;
+	check_sql -.-> repair_sql;
+	execute_sql -.-> fail_gracefully;
+	execute_sql -.-> plan_visualization;
+	execute_sql -.-> repair_sql;
+	generate_sql -.-> check_sql;
+	generate_sql -.-> fail_gracefully;
+	plan_visualization -.-> explain;
+	plan_visualization -.-> rule_based_fallback;
+	repair_sql -.-> check_sql;
+	repair_sql -.-> fail_gracefully;
+	rule_based_fallback --> explain;
+	explain --> __end__;
+	fail_gracefully --> __end__;
+	classDef default fill:#f2f0ff,line-height:1.2
+	classDef first fill-opacity:0
+	classDef last fill:#bfb6fc
